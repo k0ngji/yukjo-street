@@ -12,13 +12,16 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
-// 모델(129MB)은 GitHub 저장소의 파일당 100MB 제한 때문에 저장소가 아닌
-// Release 첨부파일로 올린다. 로컬 개발 서버에서는 assets의 파일을 그대로 쓰고,
-// 배포된 사이트(github.io)에서는 Release 주소에서 내려받는다.
+// 모델(129MB)은 GitHub 저장소의 파일당 100MB 제한 때문에 95MB 이하 조각
+// 2개(.part1/.part2)로 나눠 저장소에 넣고, 뷰어가 받아서 이어붙여 파싱한다.
+// (GitHub Release 첨부파일은 CORS 헤더를 안 줘서 브라우저 fetch가 차단됨 - 검증 완료.
+//  조각 파일은 페이지와 같은 출처라 차단 이슈가 없다.)
+// 로컬 개발 서버에서는 assets의 단일 GLB를 그대로 쓴다. ?parts=1 로 조각 경로 테스트 가능.
 const IS_LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
-const MODEL_URL = IS_LOCAL
-	? './assets/TM_6street2_web.glb'
-	: 'https://github.com/k0ngji/yukjo-street/releases/download/v1.0/TM_6street2_web.glb';
+const FORCE_PARTS = new URLSearchParams(location.search).get('parts') === '1';
+const MODEL_URLS = (IS_LOCAL && !FORCE_PARTS)
+	? ['./assets/TM_6street2_web.glb']
+	: ['./assets/TM_6street2_web.glb.part1', './assets/TM_6street2_web.glb.part2'];
 
 const container = document.getElementById('viewer-container');
 const posterEl = document.getElementById('viewer-poster');
@@ -659,9 +662,14 @@ function loadModel() {
 	gltfLoader.setKTX2Loader(ktx2Loader);
 	gltfLoader.setMeshoptDecoder(MeshoptDecoder);
 
-	gltfLoader.load(
-		MODEL_URL,
-		(gltf) => {
+	fetchModelData(MODEL_URLS, setProgress)
+		.then(
+			(buffer) =>
+				new Promise((resolve, reject) => {
+					gltfLoader.parse(buffer, './', resolve, reject);
+				})
+		)
+		.then((gltf) => {
 			scene.add(gltf.scene);
 			modelRoot = gltf.scene;
 			enableShadowsOnObject(gltf.scene);
@@ -670,17 +678,50 @@ function loadModel() {
 
 			progressWrap.hidden = true;
 			posterEl.classList.add('viewer-poster--hidden');
-		},
-		(xhr) => {
-			setProgress(xhr.loaded, xhr.total);
-		},
-		(error) => {
+		})
+		.catch((error) => {
 			console.error('GLTF 로드 오류:', error);
 			showError(
-				'3D 모델을 불러오지 못했습니다. assets/TM_6street2_web.glb 파일이 존재하는지, 그리고 http:// 로 서버를 통해 접속했는지 확인해 주세요. (file:// 로는 동작하지 않습니다)'
+				'3D 모델을 불러오지 못했습니다. 네트워크 상태를 확인하고 다시 시도해 주세요. (로컬에서 여는 경우 http:// 서버를 통해 접속해야 하며, file:// 로는 동작하지 않습니다)'
 			);
+		});
+}
+
+// 모델 데이터를 (여러 조각이면 순서대로) 내려받아 하나의 ArrayBuffer로 이어붙인다.
+// HEAD 요청으로 전체 크기를 먼저 합산해 진행률을 정확히 표시한다.
+async function fetchModelData(urls, onProgress) {
+	let total = 0;
+	try {
+		for (const url of urls) {
+			const head = await fetch(url, { method: 'HEAD' });
+			total += Number(head.headers.get('Content-Length')) || 0;
 		}
-	);
+	} catch (e) {
+		total = 0; // HEAD 실패 시 진행률은 크기 미상 모드로 표시
+	}
+
+	const chunks = [];
+	let loaded = 0;
+	for (const url of urls) {
+		const resp = await fetch(url);
+		if (!resp.ok) throw new Error(`HTTP ${resp.status} - ${url}`);
+		const reader = resp.body.getReader();
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			chunks.push(value);
+			loaded += value.byteLength;
+			onProgress(loaded, total);
+		}
+	}
+
+	const merged = new Uint8Array(loaded);
+	let offset = 0;
+	for (const c of chunks) {
+		merged.set(c, offset);
+		offset += c.byteLength;
+	}
+	return merged.buffer;
 }
 
 loadBtn.addEventListener('click', loadModel);
