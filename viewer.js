@@ -19,9 +19,19 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // 로컬 개발 서버에서는 assets의 단일 GLB를 그대로 쓴다. ?parts=1 로 조각 경로 테스트 가능.
 const IS_LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
 const FORCE_PARTS = new URLSearchParams(location.search).get('parts') === '1';
-const MODEL_URLS = (IS_LOCAL && !FORCE_PARTS)
-	? ['./assets/TM_6street2_web.glb']
-	: ['./assets/TM_6street2_web.glb.part1', './assets/TM_6street2_web.glb.part2'];
+
+// 모바일은 129MB 모델의 메모리 부담으로 탭이 강제 재시작되는 문제가 있어
+// (실사용 확인) 경량 모델(21.5MB, 단순화 강화 + 512px 텍스처)을 따로 쓰고,
+// 후처리(GTAO/MSAA)도 끈다. ?mobile=1 로 데스크톱에서 모바일 경로 테스트 가능.
+const IS_MOBILE =
+	/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ||
+	new URLSearchParams(location.search).get('mobile') === '1';
+
+const MODEL_URLS = IS_MOBILE
+	? ['./assets/TM_6street2_web_m.glb']
+	: (IS_LOCAL && !FORCE_PARTS)
+		? ['./assets/TM_6street2_web.glb']
+		: ['./assets/TM_6street2_web.glb.part1', './assets/TM_6street2_web.glb.part2'];
 
 const container = document.getElementById('viewer-container');
 const posterEl = document.getElementById('viewer-poster');
@@ -73,6 +83,8 @@ let sunLight, hemiLight;
 let animationStarted = false;
 let modelRoot = null;
 let recenterState = null;
+// 연못/개천 수면에 입힌 절차적 잔물결 노멀맵. animate()에서 offset을 흘려 애니메이션한다.
+let waterNormalMap = null;
 
 // 화면 정규 좌표(0~1, y는 위에서 아래)에서 씬으로 레이캐스트해 표면 월드 좌표를 반환한다.
 // 핫스팟 좌표 보정(캘리브레이션) 및 더블클릭 리센터 기능에서 공용으로 사용.
@@ -109,7 +121,14 @@ function startRecenter(newTarget, targetDistance) {
 		startCamPos,
 		newTarget,
 		newCameraPos,
-		startTime: performance.now(),
+		// 주의: 절대시간(performance.now 기준 경과시간)으로 진행률을 계산하면 안 된다.
+		// (1) 더블클릭 직후 rAF가 '멈추기 전' 프레임의 타임스탬프를 들고 와 경과시간이
+		//     음수가 되면 ease 계산이 역외삽되어 카메라가 엉뚱한 곳에서 한 컷 렌더링되고,
+		// (2) 셰이더 컴파일 등으로 수백 ms 멈춘 뒤에는 애니메이션이 그만큼 건너뛰어
+		//     점프컷처럼 보인다 (둘 다 실측으로 확인).
+		// 대신 프레임마다 실제 흐른 시간을 최대 50ms까지만 progress에 누적한다.
+		progress: 0,
+		lastNow: null,
 		duration,
 	};
 	// 이동 중 OrbitControls 입력(드래그/줌)과 충돌하지 않도록 잠시 비활성화한다.
@@ -132,7 +151,12 @@ function cancelRecenter() {
 
 function updateRecenter(now) {
 	if (!recenterState || !camera || !controls) return;
-	const t = Math.min(1, (now - recenterState.startTime) / recenterState.duration);
+	const s = recenterState;
+	// 프레임당 진행량을 50ms로 제한 - 렌더 멈춤(freeze) 뒤에도 점프 없이 이어진다.
+	const dt = s.lastNow === null ? 16 : THREE.MathUtils.clamp(now - s.lastNow, 0, 50);
+	s.lastNow = now;
+	s.progress = Math.min(1, s.progress + dt / s.duration);
+	const t = s.progress;
 	const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
 	controls.target.lerpVectors(recenterState.startTarget, recenterState.newTarget, eased);
 	camera.position.lerpVectors(recenterState.startCamPos, recenterState.newCameraPos, eased);
@@ -303,7 +327,8 @@ buildHotspotMarkers();
 
 function initScene() {
 	renderer = new THREE.WebGLRenderer({ antialias: true });
-	renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+	// 모바일은 GPU/메모리 부담을 줄이기 위해 픽셀비율 1로 제한
+	renderer.setPixelRatio(IS_MOBILE ? 1 : Math.min(window.devicePixelRatio, 2));
 	renderer.setSize(container.clientWidth, container.clientHeight);
 	renderer.toneMapping = THREE.ACESFilmicToneMapping;
 	renderer.toneMappingExposure = 1.1;
@@ -347,7 +372,7 @@ function initScene() {
 	sunLight = new THREE.DirectionalLight(0xfff1d6, 3.5);
 	sunLight.position.copy(SUN_DIRECTION); // 임시 위치, 모델 로드 후 씬 크기에 맞춰 재배치
 	sunLight.castShadow = true;
-	sunLight.shadow.mapSize.set(4096, 4096);
+	sunLight.shadow.mapSize.set(IS_MOBILE ? 2048 : 4096, IS_MOBILE ? 2048 : 4096);
 	sunLight.shadow.bias = -0.0003;
 	sunLight.shadow.normalBias = 0.6;
 	scene.add(sunLight);
@@ -361,6 +386,10 @@ function initScene() {
 
 	// 후처리 체인: RenderPass -> GTAO(SSAO) -> OutputPass
 	// MSAA 손실 방지를 위해 composer 렌더타깃에 samples(WebGL2 멀티샘플) 지정
+	// 모바일은 GPU 메모리/발열 부담이 커서 후처리 체인 전체를 생략한다
+	// (composer가 없으면 animate()가 renderer.render로 직접 그리고,
+	//  톤매핑은 렌더러가 자체 적용하므로 색감은 거의 동일하다).
+	if (!IS_MOBILE) {
 	const pixelRatio = renderer.getPixelRatio();
 	const w = container.clientWidth * pixelRatio;
 	const h = container.clientHeight * pixelRatio;
@@ -420,6 +449,7 @@ function initScene() {
 
 	outputPass = new OutputPass();
 	composer.addPass(outputPass);
+	} // if (!IS_MOBILE) - 후처리 체인 끝
 
 	window.addEventListener('resize', onResize);
 
@@ -457,6 +487,12 @@ function onResize() {
 function animate(now) {
 	requestAnimationFrame(animate);
 	updateRecenter(now || performance.now());
+	if (waterNormalMap) {
+		// 잔물결이 천천히 흘러가는 느낌 - 절대시간 기반이라 프레임 드랍에도 속도가 일정하다.
+		const t = (now || performance.now()) * 0.001;
+		// 거울 같은 잔잔한 수면을 위해 이전보다 절반 이하로 늦췄다
+		waterNormalMap.offset.set((t * 0.008) % 1, (t * 0.005) % 1);
+	}
 	if (controls) controls.update();
 	if (composer) {
 		composer.render();
@@ -552,6 +588,237 @@ function enableShadowsOnObject(object) {
 			node.receiveShadow = true;
 		}
 	});
+}
+
+// ---------- 연못/개천 물 재질 사실화 ----------
+// isWaterMaterial()은 이름에 "water"만 들어가도 걸리므로 연잎(수련) 알파 카드 재질
+// (MI_MI_WaterLily01...)까지 함께 걸러진다 - 그림자/GTAO 제외 용도로는 문제없지만,
+// 여기서는 실제 수면 재질만 사실적으로 바꿔야 하므로 "pool"이 이름에 있고 "lily"는
+// 없는 재질만 골라내는 별도 판정을 쓴다 (수면 재질은 MI_Pool_02 하나뿐이고 연잎은
+// 이름으로 명확히 구분된다). 실측 결과 이 모델에서는 씬 전체에 깔린 얇은 수면 박스
+// 하나(MI_Pool_02)가 지형이 그 아래로 파인 자리(연못/개천)에서만 지형 틈으로 드러나
+// 보이는 방식이라, "작은 연못 메시"가 지오메트리 상 따로 존재하지 않는다 - 이 재질을
+// 사실적으로 바꾸는 것이 곧 연못/개천을 사실적으로 바꾸는 유일한 방법이다. 재질 이름은
+// 그대로 유지해 그림자/GTAO 제외 판정(isWaterMaterial)에는 영향이 없다.
+function isPondSurfaceMaterial(material) {
+	return !!material && /pool/i.test(material.name || '') && !/lily/i.test(material.name || '');
+}
+
+// 외부 텍스처 없이 캔버스로 절차적 잔물결 노멀맵을 한 장 생성한다. 여러 방향·주파수의
+// 사인파를 합성해 높이맵을 만들고, 이웃 텍셀과의 차분으로 기울기를 구해 노멀(RGB)로
+// 인코딩한다. 경계를 wrap 계산해 RepeatWrapping과 이음매 없이 이어지도록 한다.
+function createWaterNormalMap(size = 384) {
+	const canvas = document.createElement('canvas');
+	canvas.width = size;
+	canvas.height = size;
+	const ctx = canvas.getContext('2d');
+	const imageData = ctx.createImageData(size, size);
+
+	const height = new Float32Array(size * size);
+	const waves = [
+		{ kx: 6.0, ky: 1.5, amp: 1.0 },
+		{ kx: -3.0, ky: 4.0, amp: 0.6 },
+		{ kx: 2.0, ky: -5.5, amp: 0.4 },
+		{ kx: 8.5, ky: 6.0, amp: 0.25 },
+	];
+	for (let y = 0; y < size; y++) {
+		for (let x = 0; x < size; x++) {
+			const u = x / size;
+			const v = y / size;
+			let h = 0;
+			for (const w of waves) {
+				h += w.amp * Math.sin((u * w.kx + v * w.ky) * Math.PI * 2);
+			}
+			// 저주파 물결 위에 얹는 고주파 잔물결(살짝 일그러뜨려 규칙적으로 안 보이게)
+			h += 0.15 * Math.sin((u * 23.0 + v * 17.0) * Math.PI * 2 + Math.sin(v * 9.0));
+			height[y * size + x] = h;
+		}
+	}
+
+	const wrap = (i) => ((i % size) + size) % size;
+	const gradientStrength = 2.2; // 노멀 세기는 material.normalScale에서 최종 조절
+	const normal = new THREE.Vector3();
+	for (let y = 0; y < size; y++) {
+		for (let x = 0; x < size; x++) {
+			const hL = height[y * size + wrap(x - 1)];
+			const hR = height[y * size + wrap(x + 1)];
+			const hD = height[wrap(y - 1) * size + x];
+			const hU = height[wrap(y + 1) * size + x];
+			const dx = (hR - hL) * gradientStrength;
+			const dy = (hU - hD) * gradientStrength;
+			normal.set(-dx, -dy, 1).normalize();
+			const idx = (y * size + x) * 4;
+			imageData.data[idx + 0] = Math.round((normal.x * 0.5 + 0.5) * 255);
+			imageData.data[idx + 1] = Math.round((normal.y * 0.5 + 0.5) * 255);
+			imageData.data[idx + 2] = Math.round((normal.z * 0.5 + 0.5) * 255);
+			imageData.data[idx + 3] = 255;
+		}
+	}
+	ctx.putImageData(imageData, 0, 0);
+
+	const texture = new THREE.CanvasTexture(canvas);
+	texture.wrapS = THREE.RepeatWrapping;
+	texture.wrapT = THREE.RepeatWrapping;
+	texture.needsUpdate = true;
+	return texture;
+}
+
+// 지오메트리에 UV가 없으면(연못/개천 수면 메시가 그렇다) x,z 월드 좌표를 그대로 UV로
+// 써서 평면 매핑을 만든다. RepeatWrapping + texture.repeat로 실제 타일 크기(미터)를
+// 맞추므로 UV를 0~1로 정규화할 필요는 없다.
+function ensurePlanarUV(geometry) {
+	if (geometry.attributes.uv) return;
+	const pos = geometry.attributes.position;
+	const uv = new Float32Array(pos.count * 2);
+	for (let i = 0; i < pos.count; i++) {
+		uv[i * 2] = pos.getX(i);
+		uv[i * 2 + 1] = pos.getZ(i);
+	}
+	geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+
+// 연못/개천 수면 재질을 낮은 roughness + 절차적 잔물결 노멀맵을 가진 MeshPhysicalMaterial로
+// 교체해 하늘/환경 반사가 또렷한 사실적인 물로 만든다. 재질 이름은 유지해 기존
+// 그림자/GTAO 제외 판정에는 영향을 주지 않는다.
+// 반환하는 배열은 이 함수가 만든 MeshPhysicalMaterial 인스턴스 목록으로, 이후
+// captureWaterEnvMap()에서 CubeCamera로 촬영한 실사 반사 큐브맵을 envMap으로
+// 꽂아 넣을 때 쓴다 (전체 traverse를 다시 돌 필요 없이 바로 참조하기 위함).
+function upgradeWaterMaterials(root) {
+	const rippleMap = createWaterNormalMap();
+	// 참조 사진(경회루 연못)처럼 파장이 길고 거의 안 보일 정도로 잔잔하게 -
+	// 타일을 크게 키워(약 16m) 잔물결 주파수를 낮춘다.
+	rippleMap.repeat.set(1 / 16, 1 / 16);
+
+	const waterMaterials = [];
+	let count = 0;
+	root.traverse((node) => {
+		if (!(node.isMesh || node.isInstancedMesh) || !node.geometry) return;
+		const mats = Array.isArray(node.material) ? node.material : [node.material];
+		if (!mats.some(isPondSurfaceMaterial)) return;
+
+		ensurePlanarUV(node.geometry);
+
+		const newMats = mats.map((m) => {
+			if (!isPondSurfaceMaterial(m)) return m;
+			const water = new THREE.MeshPhysicalMaterial({
+				// 밝은 청록이 아니라 어둡고 녹색기 도는 청록 (참조 사진 물색). 실측 결과
+				// 씬의 배경(아주 밝은 하늘색, HDR로 밝혀둔 값)이 반사/IBL에 그대로 실려
+				// 예상보다 훨씬 밝게 뜨는 것을 확인해 베이스 컬러를 한 단계 더 낮췄다.
+				color: new THREE.Color(0x0a2420),
+				// 완전 미러(roughness 0.03대)로 하면 씬의 아주 밝은 하늘색 배경이
+				// 그대로 반사되어 정오 수영장처럼 밝아진다 - 살짝 더 거칠게 해
+				// 반사를 부드럽게 뭉개고(눈부신 점 반사 방지) 어두운 기본색이 우세하게 한다.
+				roughness: 0.08,
+				metalness: 0,
+				// CubeCamera 촬영 실패 시(찾기 실패) 이 값이 scene.environment 폴백에도
+				// 적용되므로 과하지 않게 낮게 잡는다. 촬영 성공 시 captureWaterEnvMap()에서
+				// 실사 큐브맵 + 절제된 세기로 덮어쓴다.
+				// (실측: envMapIntensity 1.0/0.45 모두 씬의 밝은 하늘 배경이 IBL로 실려
+				// 수면 전체가 밝은 청록으로 뜨는 원인이었다 - 반사가 "살짝 비치는" 정도로만
+				// 남도록 크게 낮춘다.)
+				envMapIntensity: 0.18,
+				// 태양 직사 스페큘러 하이라이트 세기도 낮춰(반사 자체는 살리되 눈부신
+				// 점광 하이라이트만 죽인다) 참조 사진처럼 반짝임이 거의 없게 한다.
+				specularIntensity: 0.5,
+				transparent: true,
+				opacity: 0.97,
+				normalMap: rippleMap,
+				// 태양 스페큘러가 노멀 노이즈에 갈려 생기던 "자글자글한 윤슬"의 주원인 -
+				// 크게 낮춰 표면을 거의 평평하게(잔물결이 비치는 상만 살짝 흔드는 정도로).
+				// 0.05에서도 밝은 하늘 반사가 물결 모양의 흰 띠로 크게 일렁여 더 낮췄다.
+				normalScale: new THREE.Vector2(0.03, 0.03),
+			});
+			water.name = m.name; // isWaterMaterial() 이름 매칭 유지
+			waterMaterials.push(water);
+			return water;
+		});
+		node.material = Array.isArray(node.material) ? newMats : newMats[0];
+		count += 1;
+	});
+
+	if (count > 0) {
+		waterNormalMap = rippleMap;
+		console.log(`[viewer] 연못/개천 물 재질 ${count}개를 업그레이드했습니다.`);
+	} else {
+		console.warn('[viewer] 연못/개천 물 메시를 찾지 못했습니다.');
+	}
+	return waterMaterials;
+}
+
+// ---------- 연못 실사 반사 (CubeCamera 1회 촬영) ----------
+// 절차적 잔물결 노멀맵 + 낮은 roughness만으로는 반사되는 상이 scene.environment
+// (RoomEnvironment, 실내용 더미 환경) 뿐이라 하늘색 밋밋한 "수영장" 느낌을 벗어나지
+// 못한다. 실제 주변 나무/건물/하늘이 비치도록 연못 수면 바로 위에서 CubeCamera로
+// 주변을 한 번 촬영해 그 결과를 물 재질의 envMap으로 지정한다. 씬은 정적이므로
+// 1회 촬영이면 충분하고, 매 프레임 갱신하지 않아 성능 부담이 없다.
+function captureWaterEnvMap(root, waterMaterials) {
+	if (!waterMaterials || !waterMaterials.length) return;
+
+	// 수면 재질이 씬 전체에 걸친 얇은 박스 하나라 좌표를 기하학적으로 뽑아낼 수 없어,
+	// 의정부 연못(사용자가 참조 룩 검증에 쓰는 지점) 부근에서 아래로 레이캐스트해
+	// 실제 수면 높이를 찾는다.
+	const probeX = 110;
+	const probeZ = -121;
+	const downRay = new THREE.Raycaster(
+		new THREE.Vector3(probeX, 2000, probeZ),
+		new THREE.Vector3(0, -1, 0),
+		0,
+		4000
+	);
+	const hits = downRay.intersectObjects(root.children, true);
+	const waterHit = hits.find((h) => {
+		if (!h.object.isMesh) return false;
+		const mats = Array.isArray(h.object.material) ? h.object.material : [h.object.material];
+		return mats.some(isPondSurfaceMaterial);
+	});
+	if (!waterHit) {
+		console.warn('[viewer] 물 반사 CubeCamera 위치(수면 높이)를 찾지 못해 실사 반사를 건너뜁니다.');
+		return;
+	}
+
+	// 주의: 큐브 렌더타깃에 generateMipmaps를 켜서 직접 쓰면 6개 면이 각각
+	// 밉맵을 만들면서 면 경계가 수면 반사에 곧은 이음매 줄로 드러난다 (실사용 확인).
+	// 촬영은 밉맵 없이 하고, 아래에서 PMREM으로 변환해 이음매 없는 반사맵을 만든다.
+	const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(IS_MOBILE ? 256 : 512, {
+		type: THREE.HalfFloatType,
+	});
+	const cubeCamera = new THREE.CubeCamera(0.1, 2000, cubeRenderTarget);
+	cubeCamera.position.set(probeX, waterHit.point.y + 1.5, probeZ);
+	scene.add(cubeCamera);
+
+	// 촬영 중에는 물 메시를 숨겨 자기 자신(수면)이 반사에 찍히지 않게 한다.
+	const hiddenNodes = [];
+	root.traverse((node) => {
+		if (!(node.isMesh || node.isInstancedMesh) || !node.material) return;
+		const mats = Array.isArray(node.material) ? node.material : [node.material];
+		if (mats.some(isPondSurfaceMaterial)) {
+			hiddenNodes.push([node, node.visible]);
+			node.visible = false;
+		}
+	});
+
+	cubeCamera.update(renderer, scene);
+
+	hiddenNodes.forEach(([node, visible]) => {
+		node.visible = visible;
+	});
+	scene.remove(cubeCamera);
+
+	// PMREM 변환: roughness에 따라 부드럽게 흐려지는 이음매 없는 반사맵.
+	// (원본 큐브 렌더타깃은 변환 후 바로 해제)
+	const pmremTarget = pmremGenerator.fromCubemap(cubeRenderTarget.texture);
+	cubeRenderTarget.dispose();
+
+	waterMaterials.forEach((m) => {
+		m.envMap = pmremTarget.texture;
+		// 씬 배경(하늘)이 의도적으로 아주 밝게 잡혀 있어(연한 하늘색을 HDR로 밝힘)
+		// 반사 세기를 1.0으로 두면 거울처럼 하늘빛을 그대로 반사해 수영장처럼 밝아진다.
+		// 참조 사진처럼 어두운 수면 위에 주변 형상이 옅게만 비치도록 절제한다.
+		m.envMapIntensity = 0.45;
+		m.needsUpdate = true;
+	});
+
+	console.log('[viewer] 연못 CubeCamera 실사 반사 캡처를 완료했습니다.');
 }
 
 // 세로로 서 있는 대형 배경 이미지 평면(광화문 뒤 등, gltfpack이 mesh 이름을 지워
@@ -674,6 +941,8 @@ function loadModel() {
 			modelRoot = gltf.scene;
 			enableShadowsOnObject(gltf.scene);
 			applyUnlitBackgroundPlanes(gltf.scene);
+			const waterMaterials = upgradeWaterMaterials(gltf.scene);
+			captureWaterEnvMap(gltf.scene, waterMaterials);
 			frameCameraToObject(gltf.scene);
 
 			progressWrap.hidden = true;
@@ -700,7 +969,10 @@ async function fetchModelData(urls, onProgress) {
 		total = 0; // HEAD 실패 시 진행률은 크기 미상 모드로 표시
 	}
 
-	const chunks = [];
+	// 전체 크기를 알면 최종 버퍼를 미리 확보하고 조각을 바로 그 자리에 써서
+	// 메모리 피크를 절반으로 줄인다 (모바일 탭 강제종료 방지에 중요).
+	let merged = total > 0 ? new Uint8Array(total) : null;
+	const chunks = merged ? null : [];
 	let loaded = 0;
 	for (const url of urls) {
 		const resp = await fetch(url);
@@ -709,19 +981,31 @@ async function fetchModelData(urls, onProgress) {
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (done) break;
-			chunks.push(value);
+			if (merged) {
+				if (loaded + value.byteLength > merged.length) {
+					// 실제 크기가 HEAD 합계보다 크면(비정상) 안전하게 확장
+					const grown = new Uint8Array(loaded + value.byteLength);
+					grown.set(merged.subarray(0, loaded));
+					merged = grown;
+				}
+				merged.set(value, loaded);
+			} else {
+				chunks.push(value);
+			}
 			loaded += value.byteLength;
 			onProgress(loaded, total);
 		}
 	}
 
-	const merged = new Uint8Array(loaded);
+	// 정확히 맞으면 복사 없이 그대로 반환 (slice는 사본을 만들어 메모리를 2배로 쓴다)
+	if (merged) return loaded === merged.length ? merged.buffer : merged.buffer.slice(0, loaded);
+	const out = new Uint8Array(loaded);
 	let offset = 0;
 	for (const c of chunks) {
-		merged.set(c, offset);
+		out.set(c, offset);
 		offset += c.byteLength;
 	}
-	return merged.buffer;
+	return out.buffer;
 }
 
 loadBtn.addEventListener('click', loadModel);

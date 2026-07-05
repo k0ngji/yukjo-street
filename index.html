@@ -338,7 +338,11 @@
 
 	.viewer-load-btn:disabled {
 		cursor: default;
-		opacity: 0.7;
+		/* opacity를 쓰면 버튼이 반투명해지며 제 그림자가 곡면 가장자리로 비쳐
+		   양옆에 실선처럼 보인다 - 명시적 색상 + 그림자 제거로 처리 */
+		background: #a8965f;
+		color: rgba(245, 240, 228, 0.8);
+		box-shadow: none;
 	}
 
 	.viewer-hint {
