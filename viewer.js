@@ -152,8 +152,11 @@ function cancelRecenter() {
 function updateRecenter(now) {
 	if (!recenterState || !camera || !controls) return;
 	const s = recenterState;
-	// 프레임당 진행량을 50ms로 제한 - 렌더 멈춤(freeze) 뒤에도 점프 없이 이어진다.
-	const dt = s.lastNow === null ? 16 : THREE.MathUtils.clamp(now - s.lastNow, 0, 50);
+	// 프레임당 진행량 상한: 수백 ms 멈춤(freeze) 뒤의 점프컷만 막는 안전장치.
+	// 너무 낮게(50ms) 잡으면 프레임이 느린 기기(모바일 등)에서 실제 시간보다
+	// 애니메이션이 느리게 가며 계단식으로 끊겨 보인다 - 일반적인 느린 프레임
+	// (~100ms)은 그대로 통과시키고 병적인 멈춤만 자르도록 120ms로 둔다.
+	const dt = s.lastNow === null ? 16 : THREE.MathUtils.clamp(now - s.lastNow, 0, 120);
 	s.lastNow = now;
 	s.progress = Math.min(1, s.progress + dt / s.duration);
 	const t = s.progress;
@@ -886,7 +889,11 @@ function formatBytes(bytes) {
 
 function setProgress(loaded, total) {
 	progressWrap.hidden = false;
-	if (total && total > 0) {
+	// 주의: GitHub Pages 등은 파일을 gzip으로 압축 전송해서 HEAD의 Content-Length가
+	// '압축된' 크기다. 스트림으로 쌓이는 loaded는 '압축 해제된' 바이트라 total을
+	// 넘어설 수 있다 (실사용에서 93.8/53.1MB(100%) 표기 발생). 넘어서면 total을
+	// 신뢰할 수 없으므로 크기 미상 모드로 전환한다.
+	if (total && total > 0 && loaded <= total) {
 		const pct = Math.min(100, (loaded / total) * 100);
 		progressBar.style.width = `${pct}%`;
 		progressLabel.textContent = `${formatBytes(loaded)} / ${formatBytes(total)} (${pct.toFixed(0)}%)`;
@@ -983,8 +990,12 @@ async function fetchModelData(urls, onProgress) {
 			if (done) break;
 			if (merged) {
 				if (loaded + value.byteLength > merged.length) {
-					// 실제 크기가 HEAD 합계보다 크면(비정상) 안전하게 확장
-					const grown = new Uint8Array(loaded + value.byteLength);
+					// 실제 크기가 HEAD 합계보다 클 수 있다 (gzip 전송 시 Content-Length는
+					// 압축 크기). 조각마다 정확히 늘리면 매 조각 전체 복사가 일어나
+					// 폰에서 심하게 버벅이므로, 1.5배 여유를 두고 한 번에 늘린다.
+					const grown = new Uint8Array(
+						Math.max(loaded + value.byteLength, Math.floor(merged.length * 1.5))
+					);
 					grown.set(merged.subarray(0, loaded));
 					merged = grown;
 				}
