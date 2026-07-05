@@ -11,6 +11,11 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { MeshBVH, acceleratedRaycast } from 'three/addons/libs/three-mesh-bvh.module.js';
+
+// BVH 가속 레이캐스트: boundsTree가 있는 지오메트리는 색인으로 O(log n) 검사,
+// 없는 지오메트리는 기존 방식으로 동작한다 (안전한 전역 교체).
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 // 모델(129MB)은 GitHub 저장소의 파일당 100MB 제한 때문에 95MB 이하 조각
 // 2개(.part1/.part2)로 나눠 저장소에 넣고, 뷰어가 받아서 이어붙여 파싱한다.
@@ -88,12 +93,46 @@ let waterNormalMap = null;
 
 // 화면 정규 좌표(0~1, y는 위에서 아래)에서 씬으로 레이캐스트해 표면 월드 좌표를 반환한다.
 // 핫스팟 좌표 보정(캘리브레이션) 및 더블클릭 리센터 기능에서 공용으로 사용.
+//
+// 성능: 씬 전체(나무 인스턴스 1,200여 그루의 고밀도 잎 지오메트리 포함)를 검사하면
+// 더블클릭마다 매번 ~400ms 멈춰 애니메이션이 끊긴다 (실측). 인스턴스 메시(수목)를
+// 제외한 일반 메시 목록을 로드 시 한 번 캐시해 두고 그것만 검사한다 - 나무를
+// 클릭하면 그 뒤의 지면/건물로 이동하므로 오히려 자연스럽다.
+let raycastTargets = null; // buildRaycastTargets()가 로드 후 채운다
+function buildRaycastTargets(root) {
+	raycastTargets = [];
+	let bvhCount = 0;
+	root.traverse((node) => {
+		if (!node.isMesh || node.isInstancedMesh) return;
+		raycastTargets.push(node);
+		// BVH 색인은 '화면 전체에 걸쳐 있어 모든 레이캐스트에 전수 검사되는'
+		// 초대형 메시(지형/대로 - 수백만 삼각형)에만 만든다. 이들이 더블클릭당
+		// ~400ms 멈춤의 주범이었다. 주의: 임계값을 낮춰 수십 개 메시에 색인을
+		// 만들면 색인 메모리(삼각형당 수십 바이트)가 수백 MB로 불어나
+		// 렌더링 전체가 느려진다 (실측: 프레임 33ms -> 75ms 악화).
+		const index = node.geometry.index;
+		const triCount = (index ? index.count : node.geometry.attributes.position.count) / 3;
+		if (triCount > 400000) {
+			try {
+				node.geometry.boundsTree = new MeshBVH(node.geometry);
+				bvhCount += 1;
+			} catch (e) {
+				// 색인 실패 시 기존 전수 검사로 동작 (기능엔 문제 없음)
+			}
+		}
+	});
+	console.log(`[viewer] 레이캐스트 대상 ${raycastTargets.length}개, BVH 색인 ${bvhCount}개 구축`);
+}
+
+const _sharedRaycaster = new THREE.Raycaster();
 function raycastFromNormalized(nx, ny) {
 	if (!camera || !scene) return null;
 	const mouse = new THREE.Vector2(nx * 2 - 1, -(ny * 2 - 1));
-	const raycaster = new THREE.Raycaster();
-	raycaster.setFromCamera(mouse, camera);
-	const hits = raycaster.intersectObjects(scene.children, true);
+	_sharedRaycaster.setFromCamera(mouse, camera);
+	const pool = raycastTargets;
+	const hits = pool
+		? _sharedRaycaster.intersectObjects(pool, false)
+		: _sharedRaycaster.intersectObjects(scene.children, true);
 	const hit = hits.find((h) => h.object.visible && h.object.isMesh);
 	return hit ? hit.point.clone() : null;
 }
@@ -169,15 +208,38 @@ function updateRecenter(now) {
 	}
 }
 
-function onCanvasDoubleClick(event) {
+function recenterAtClientPoint(clientX, clientY) {
 	if (!camera || !scene || !controls || !renderer) return;
 	const rect = renderer.domElement.getBoundingClientRect();
-	const nx = (event.clientX - rect.left) / rect.width;
-	const ny = (event.clientY - rect.top) / rect.height;
+	const nx = (clientX - rect.left) / rect.width;
+	const ny = (clientY - rect.top) / rect.height;
 	const point = raycastFromNormalized(nx, ny);
 	if (!point) return; // 모델 표면과 교차하지 않으면 무시
 	const floor = Math.max(controls.minDistance * 1.8, 25);
 	startRecenter(point, recenterZoomDistance(0.5, floor));
+}
+
+function onCanvasDoubleClick(event) {
+	recenterAtClientPoint(event.clientX, event.clientY);
+}
+
+// 모바일 더블탭 → 리센터. OrbitControls가 캔버스에 touch-action:none을 걸어
+// 브라우저가 더블탭을 dblclick 이벤트로 합성해 주지 않으므로 직접 감지한다.
+// (350ms 이내, 25px 이내의 연속 두 탭)
+let lastTap = null;
+function onCanvasPointerUp(event) {
+	if (event.pointerType !== 'touch') return;
+	const now = performance.now();
+	if (
+		lastTap &&
+		now - lastTap.time < 350 &&
+		Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 25
+	) {
+		lastTap = null;
+		recenterAtClientPoint(event.clientX, event.clientY);
+		return;
+	}
+	lastTap = { time: now, x: event.clientX, y: event.clientY };
 }
 
 // ---------- 관청 핫스팟 오버레이 ----------
@@ -456,8 +518,9 @@ function initScene() {
 
 	window.addEventListener('resize', onResize);
 
-	// 더블클릭 리센터 (스케치팹 스타일)
+	// 더블클릭 리센터 (스케치팹 스타일) + 모바일 더블탭
 	renderer.domElement.addEventListener('dblclick', onCanvasDoubleClick);
+	renderer.domElement.addEventListener('pointerup', onCanvasPointerUp);
 	// 이동 중 사용자가 드래그/줌을 시작하면 애니메이션을 즉시 넘겨주어(캔슬)
 	// 조작이 막힌 느낌이 들지 않게 한다.
 	renderer.domElement.addEventListener('pointerdown', cancelRecenter);
@@ -948,6 +1011,7 @@ function loadModel() {
 			modelRoot = gltf.scene;
 			enableShadowsOnObject(gltf.scene);
 			applyUnlitBackgroundPlanes(gltf.scene);
+			buildRaycastTargets(gltf.scene);
 			const waterMaterials = upgradeWaterMaterials(gltf.scene);
 			captureWaterEnvMap(gltf.scene, waterMaterials);
 			frameCameraToObject(gltf.scene);
@@ -970,6 +1034,12 @@ async function fetchModelData(urls, onProgress) {
 	try {
 		for (const url of urls) {
 			const head = await fetch(url, { method: 'HEAD' });
+			// gzip/br 압축 전송이면 Content-Length는 '압축된' 크기라 실제 받는
+			// 바이트(압축 해제)와 달라 퍼센트가 왜곡된다 - 크기 미상 모드로 간다.
+			if (head.headers.get('content-encoding')) {
+				total = 0;
+				break;
+			}
 			total += Number(head.headers.get('Content-Length')) || 0;
 		}
 	} catch (e) {
