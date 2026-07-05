@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+	<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127963;</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>한양도성 육조거리 — 디지털 재현 모델</title>
+<meta name="description" content="조선시대 한양 도성의 중심 관청거리, 육조거리를 디지털로 재현한 3D 인터랙티브 모델" />
+<style>
+	:root {
+		--color-ink: #f5f0e4;
+		--color-ink-2: #efe8d8;
+		--color-surface: #ece4d0;
+		--color-surface-2: #e4dac2;
+		--color-hanji: #2b2620;
+		--color-hanji-dim: #6b6252;
+		--color-accent: #a63a24;
+		--color-accent-2: #8f7028;
+		--color-border: rgba(43, 38, 32, 0.16);
+		--font-main: "Pretendard Variable", Pretendard, "Noto Sans KR", "Malgun Gothic", sans-serif;
+	}
+
+	* {
+		box-sizing: border-box;
+	}
+
+	html {
+		scroll-behavior: smooth;
+	}
+
+	body {
+		margin: 0;
+		font-family: var(--font-main);
+		background: var(--color-ink);
+		color: var(--color-hanji);
+		line-height: 1.7;
+		-webkit-font-smoothing: antialiased;
+	}
+
+	img, canvas {
+		max-width: 100%;
+	}
+
+	a {
+		color: var(--color-accent-2);
+	}
+
+	/* ---------- 공통 섹션 레이아웃 ---------- */
+	section {
+		padding: 6rem 1.5rem;
+	}
+
+	.section-inner {
+		max-width: 960px;
+		margin: 0 auto;
+	}
+
+	.eyebrow {
+		display: inline-block;
+		letter-spacing: 0.28em;
+		font-size: 0.78rem;
+		color: var(--color-accent-2);
+		text-transform: uppercase;
+		margin-bottom: 1rem;
+	}
+
+	/* ---------- 히어로 ---------- */
+	.hero {
+		position: relative;
+		min-height: 100vh;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		text-align: center;
+		padding: 2rem 1.5rem;
+		background:
+			radial-gradient(ellipse at 50% 20%, rgba(166, 58, 36, 0.10), transparent 60%),
+			linear-gradient(180deg, var(--color-ink-2) 0%, var(--color-ink) 100%);
+		overflow: hidden;
+	}
+
+	.hero::before {
+		content: "";
+		position: absolute;
+		inset: 0;
+		background-image:
+			linear-gradient(90deg, rgba(43, 38, 32, 0.05) 1px, transparent 1px),
+			linear-gradient(0deg, rgba(43, 38, 32, 0.05) 1px, transparent 1px);
+		background-size: 64px 64px;
+		mask-image: radial-gradient(ellipse at center, black 0%, transparent 75%);
+		pointer-events: none;
+	}
+
+	.hero-content {
+		position: relative;
+		z-index: 1;
+	}
+
+	.hero .eyebrow {
+		font-size: 0.85rem;
+	}
+
+	.hero h1 {
+		font-size: clamp(2.4rem, 6vw, 4.2rem);
+		margin: 0.5rem 0 1rem;
+		font-weight: 700;
+		letter-spacing: 0.02em;
+		color: var(--color-hanji);
+	}
+
+	.hero p.subtitle {
+		font-size: clamp(1rem, 2.2vw, 1.35rem);
+		color: var(--color-hanji-dim);
+		margin: 0 auto;
+		max-width: 40rem;
+	}
+
+	.hero-divider {
+		width: 64px;
+		height: 3px;
+		background: var(--color-accent);
+		margin: 2rem auto 0;
+		border-radius: 2px;
+	}
+
+	.scroll-cue {
+		position: absolute;
+		bottom: 2.5rem;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.5rem;
+		color: var(--color-hanji-dim);
+		font-size: 0.8rem;
+		letter-spacing: 0.15em;
+		text-decoration: none;
+		z-index: 1;
+	}
+
+	.scroll-cue svg {
+		width: 20px;
+		height: 20px;
+		animation: scroll-bob 2s ease-in-out infinite;
+	}
+
+	@keyframes scroll-bob {
+		0%, 100% { transform: translateY(0); opacity: 0.5; }
+		50% { transform: translateY(6px); opacity: 1; }
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.scroll-cue svg { animation: none; }
+	}
+
+	/* ---------- 소개 섹션 ---------- */
+	.intro {
+		background: var(--color-ink);
+		border-top: 1px solid var(--color-border);
+	}
+
+	.intro h2 {
+		font-size: clamp(1.6rem, 3.5vw, 2.2rem);
+		margin: 0 0 1.5rem;
+		color: var(--color-hanji);
+	}
+
+	.intro p {
+		color: var(--color-hanji-dim);
+		font-size: 1.05rem;
+		margin: 0 0 1.25rem;
+	}
+
+	.intro p:last-child {
+		margin-bottom: 0;
+	}
+
+	.intro h3 {
+		font-size: 1.15rem;
+		margin: 2.25rem 0 0.75rem;
+		color: var(--color-accent-2);
+		font-weight: 600;
+	}
+
+	.intro h3:first-of-type {
+		margin-top: 1.5rem;
+	}
+
+	.intro .source-note {
+		margin-top: 2.5rem;
+		font-size: 0.78rem;
+		color: var(--color-hanji-dim);
+		opacity: 0.7;
+	}
+
+	/* ---------- 3D 뷰어 섹션 ---------- */
+	.viewer-section {
+		background: var(--color-surface);
+		border-top: 1px solid var(--color-border);
+		border-bottom: 1px solid var(--color-border);
+		padding: 4rem 1.5rem;
+	}
+
+	.viewer-section .section-inner {
+		max-width: 1280px;
+	}
+
+	.viewer-header {
+		text-align: center;
+		margin-bottom: 2rem;
+	}
+
+	.viewer-header h2 {
+		font-size: clamp(1.6rem, 3.5vw, 2.2rem);
+		margin: 0.25rem 0 0.5rem;
+	}
+
+	.viewer-header p {
+		color: var(--color-hanji-dim);
+		margin: 0;
+	}
+
+	.viewer-frame {
+		position: relative;
+		width: 100%;
+		height: 80vh;
+		min-height: 420px;
+		background: #cde8f6;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		overflow: hidden;
+	}
+
+	#viewer-container {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+	}
+
+	#viewer-container canvas {
+		display: block;
+		width: 100% !important;
+		height: 100% !important;
+	}
+
+	/* 풀스크린 토글 버튼 */
+	.viewer-fullscreen-btn {
+		position: absolute;
+		top: 0.75rem;
+		right: 0.75rem;
+		z-index: 3;
+		width: 2.4rem;
+		height: 2.4rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 1.2rem;
+		line-height: 1;
+		color: var(--color-hanji);
+		background: rgba(245, 240, 228, 0.55);
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		cursor: pointer;
+		backdrop-filter: blur(2px);
+		transition: background 0.15s ease, transform 0.15s ease;
+	}
+
+	.viewer-fullscreen-btn:hover {
+		background: rgba(245, 240, 228, 0.85);
+		transform: translateY(-1px);
+	}
+
+	.viewer-fullscreen-btn:active {
+		transform: translateY(0);
+	}
+
+	.viewer-fullscreen-btn.is-active {
+		transform: rotate(45deg);
+	}
+
+	.viewer-fullscreen-btn.is-active:hover {
+		transform: rotate(45deg) translateY(-1px);
+	}
+
+	/* 포스터 오버레이 */
+	.viewer-poster {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 1.25rem;
+		text-align: center;
+		padding: 2rem;
+		background:
+			radial-gradient(ellipse at 50% 40%, rgba(166, 58, 36, 0.08), transparent 65%),
+			var(--color-ink-2);
+		transition: opacity 0.4s ease;
+		z-index: 2;
+	}
+
+	.viewer-poster--hidden {
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.viewer-poster-title {
+		font-size: 1.1rem;
+		color: var(--color-hanji-dim);
+		max-width: 32rem;
+	}
+
+	.viewer-load-btn {
+		font-family: var(--font-main);
+		font-size: 1rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		color: var(--color-ink);
+		background: var(--color-accent-2);
+		border: none;
+		padding: 0.9rem 2rem;
+		border-radius: 999px;
+		cursor: pointer;
+		box-shadow: 0 2px 6px rgba(43, 38, 32, 0.12);
+		/* 호버 이동(translateY)은 알약형 곡면 양끝에 안티앨리어싱 실금을 만들어
+		   그림자 확대로 '떠오르는' 느낌만 준다 */
+		transition: box-shadow 0.15s ease, background 0.15s ease;
+	}
+
+	.viewer-load-btn:hover:not(:disabled) {
+		background: #7a5f20;
+		box-shadow: 0 6px 16px rgba(43, 38, 32, 0.25);
+	}
+
+	.viewer-load-btn:disabled {
+		cursor: default;
+		opacity: 0.7;
+	}
+
+	.viewer-hint {
+		font-size: 0.8rem;
+		color: var(--color-hanji-dim);
+		opacity: 0.75;
+	}
+
+	/* 진행률 바 */
+	.viewer-progress-wrap {
+		width: min(360px, 80%);
+		margin-top: 0.5rem;
+	}
+
+	.viewer-progress-track {
+		width: 100%;
+		height: 8px;
+		border-radius: 999px;
+		background: rgba(43, 38, 32, 0.12);
+		overflow: hidden;
+	}
+
+	.viewer-progress-bar {
+		height: 100%;
+		width: 0%;
+		background: linear-gradient(90deg, var(--color-accent), var(--color-accent-2));
+		border-radius: 999px;
+		transition: width 0.2s ease;
+	}
+
+	.viewer-progress-bar.indeterminate {
+		animation: progress-pulse 1.4s ease-in-out infinite;
+	}
+
+	@keyframes progress-pulse {
+		0%, 100% { opacity: 0.6; }
+		50% { opacity: 1; }
+	}
+
+	.viewer-progress-label {
+		margin-top: 0.5rem;
+		font-size: 0.8rem;
+		color: var(--color-hanji-dim);
+	}
+
+	.viewer-error {
+		color: #8c2f1c;
+		background: rgba(166, 58, 36, 0.08);
+		border: 1px solid rgba(166, 58, 36, 0.35);
+		border-radius: 6px;
+		padding: 0.75rem 1rem;
+		font-size: 0.85rem;
+		max-width: 32rem;
+	}
+
+	.viewer-quality-note {
+		margin-top: 1.25rem;
+		text-align: center;
+		font-size: 0.8rem;
+		color: var(--color-hanji-dim);
+		opacity: 0.75;
+	}
+
+	.viewer-quality-note a {
+		color: var(--color-accent-2);
+		text-decoration: underline;
+	}
+
+	/* ---------- 우측 고정 도트 내비게이션 ---------- */
+	.dot-nav {
+		position: fixed;
+		top: 50%;
+		right: 2rem;
+		transform: translateY(-50%);
+		z-index: 100;
+	}
+
+	.dot-nav ul {
+		position: relative;
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 1.1rem;
+	}
+
+	/* 점들을 관통하는 세로 연결선 - 양끝은 부드럽게 사라진다 */
+	.dot-nav ul::before {
+		content: "";
+		position: absolute;
+		top: -10px;
+		bottom: -10px;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 1px;
+		background: linear-gradient(
+			180deg,
+			transparent,
+			rgba(43, 38, 32, 0.25) 22%,
+			rgba(43, 38, 32, 0.25) 78%,
+			transparent
+		);
+	}
+
+	.dot-nav li {
+		position: relative;
+	}
+
+	/* 점만 담는 정사각 히트영역. 라벨은 절대배치라 나타나도 점이 밀리지 않는다. */
+	.dot-nav a {
+		position: relative;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 30px;
+		text-decoration: none;
+	}
+
+	.dot-nav .dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		/* 살짝 불투명한 한지색 채움 - 뒤의 연결선을 자연스럽게 가리면서 점이 선 '위'에 놓인 느낌 */
+		background: rgba(245, 240, 228, 0.85);
+		border: 1.5px solid rgba(43, 38, 32, 0.45);
+		transition: background 0.25s ease, border-color 0.25s ease,
+			box-shadow 0.25s ease, scale 0.25s ease;
+	}
+
+	.dot-nav a:hover .dot {
+		border-color: var(--color-accent-2);
+		scale: 1.3;
+	}
+
+	.dot-nav li.is-active .dot {
+		background: var(--color-accent-2);
+		border-color: var(--color-accent-2);
+		scale: 1.35;
+		box-shadow: 0 0 0 5px rgba(143, 112, 40, 0.16);
+	}
+
+	.dot-nav .dot-label {
+		position: absolute;
+		right: calc(100% + 0.4rem);
+		top: 50%;
+		transform: translateY(-50%) translateX(8px);
+		font-size: 0.75rem;
+		letter-spacing: 0.05em;
+		white-space: nowrap;
+		color: var(--color-hanji);
+		background: rgba(245, 240, 228, 0.92);
+		border: 1px solid var(--color-border);
+		padding: 0.3rem 0.75rem;
+		border-radius: 999px;
+		box-shadow: 0 2px 12px rgba(43, 38, 32, 0.1);
+		backdrop-filter: blur(3px);
+		opacity: 0;
+		transition: opacity 0.25s ease, transform 0.25s ease;
+		pointer-events: none;
+	}
+
+	.dot-nav a:hover .dot-label,
+	.dot-nav li.is-active .dot-label {
+		opacity: 1;
+		transform: translateY(-50%) translateX(0);
+	}
+
+	@media (max-width: 768px) {
+		.dot-nav {
+			display: none;
+		}
+	}
+
+	/* ---------- 핫스팟 ---------- */
+	.hotspot-layer {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		z-index: 2;
+		/* 화면 밖으로 나간 마커가 페이지 위로 튀어나오지 않도록 잘라낸다 */
+		overflow: hidden;
+	}
+
+	/* 바깥 요소: 매 프레임 JS가 3D->화면 투영 위치를 transform(translate3d)으로 쓰는
+	   '위치 전용' 요소. 여기에는 transition도, scale도 절대 걸지 않는다.
+	   (transition을 걸면 마커가 카메라를 한 박자 늦게 따라오고, scale을 걸면 CSS 변환
+	   합성 순서상 translate에 scale이 곱해져 호버 순간 마커가 화면에서 도망간다.) */
+	.hotspot-marker {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 26px;
+		height: 26px;
+		margin: -13px 0 0 -13px;
+		cursor: pointer;
+		pointer-events: auto;
+		will-change: transform;
+	}
+
+	/* 안쪽 배지: 시각 효과(색/확대) 전용 - 위치와 완전히 분리되어 있어 안전하다 */
+	.hotspot-marker-dot {
+		width: 100%;
+		height: 100%;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-ink);
+		background: rgba(43, 38, 32, 0.72);
+		border: 1.5px solid rgba(245, 240, 228, 0.9);
+		box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+		transition: background 0.15s ease, scale 0.15s ease;
+	}
+
+	.hotspot-marker-dot svg {
+		width: 15px;
+		height: 15px;
+		display: block;
+	}
+
+	.hotspot-marker:hover .hotspot-marker-dot,
+	.hotspot-marker.is-active .hotspot-marker-dot {
+		background: var(--color-accent);
+		scale: 1.15;
+	}
+
+	.hotspot-marker.is-hidden {
+		display: none;
+	}
+
+	.hotspot-popup {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: max-content;
+		max-width: 280px;
+		background: rgba(245, 240, 228, 0.97);
+		border: 1px solid var(--color-border);
+		border-radius: 10px;
+		padding: 0.85rem 1.5rem 0.85rem 1rem;
+		color: var(--color-hanji);
+		font-size: 0.84rem;
+		line-height: 1.55;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+		pointer-events: auto;
+		z-index: 4;
+		transform: translate(-50%, calc(-100% - 18px));
+	}
+
+	.hotspot-popup[hidden] {
+		display: none;
+	}
+
+	.hotspot-popup h4 {
+		margin: 0 0 0.35rem;
+		font-size: 0.95rem;
+		color: var(--color-accent-2);
+	}
+
+	.hotspot-popup p {
+		margin: 0;
+		color: var(--color-hanji-dim);
+	}
+
+	.hotspot-popup .hotspot-popup-hanja {
+		margin-left: 0.3rem;
+		font-size: 0.78rem;
+		font-weight: 400;
+		color: var(--color-hanji-dim);
+	}
+
+	.hotspot-popup .hotspot-popup-detail {
+		margin-top: 0.4rem;
+		font-size: 0.8rem;
+	}
+
+	.hotspot-popup .hotspot-popup-today {
+		margin-top: 0.55rem;
+		padding-top: 0.5rem;
+		border-top: 1px dashed var(--color-border);
+		font-size: 0.78rem;
+		color: var(--color-accent-2);
+	}
+
+	.hotspot-popup .hotspot-popup-detail:empty,
+	.hotspot-popup .hotspot-popup-today:empty {
+		display: none;
+	}
+
+	.hotspot-popup-close {
+		position: absolute;
+		top: 0.35rem;
+		right: 0.5rem;
+		background: none;
+		border: none;
+		font-size: 0.95rem;
+		line-height: 1;
+		cursor: pointer;
+		color: var(--color-hanji-dim);
+		padding: 0.2rem;
+	}
+
+	.viewer-hotspot-toggle-btn {
+		position: absolute;
+		top: 0.75rem;
+		right: 3.55rem;
+		z-index: 3;
+		height: 2.4rem;
+		padding: 0 0.85rem;
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.78rem;
+		white-space: nowrap;
+		color: var(--color-hanji);
+		background: rgba(245, 240, 228, 0.55);
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		cursor: pointer;
+		backdrop-filter: blur(2px);
+		transition: background 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+	}
+
+	.viewer-hotspot-toggle-btn:hover {
+		background: rgba(245, 240, 228, 0.85);
+		box-shadow: 0 4px 12px rgba(43, 38, 32, 0.18);
+	}
+
+	.viewer-hotspot-toggle-btn.is-off {
+		opacity: 0.55;
+	}
+
+	/* ---------- 푸터 ---------- */
+	footer {
+		background: var(--color-ink);
+		text-align: center;
+		padding: 2.5rem 1.5rem;
+		color: var(--color-hanji-dim);
+		font-size: 0.85rem;
+	}
+
+	@media (max-width: 640px) {
+		section {
+			padding: 4rem 1.25rem;
+		}
+
+		.viewer-section {
+			padding: 3rem 1rem;
+		}
+
+		.viewer-frame {
+			height: 70vh;
+		}
+	}
+</style>
+</head>
+<body>
+
+	<!-- 우측 고정 도트 내비게이션 -->
+	<nav class="dot-nav" id="dot-nav" aria-label="섹션 내비게이션">
+		<ul>
+			<li data-section="hero"><a href="#hero" data-target="hero"><span class="dot-label">홈</span><span class="dot"></span></a></li>
+			<li data-section="intro"><a href="#intro" data-target="intro"><span class="dot-label">육조거리 이야기</span><span class="dot"></span></a></li>
+			<li data-section="viewer"><a href="#viewer" data-target="viewer"><span class="dot-label">3D 둘러보기</span><span class="dot"></span></a></li>
+		</ul>
+	</nav>
+
+	<!-- ① 히어로 섹션 -->
+	<header class="hero" id="hero">
+		<div class="hero-content">
+			<span class="eyebrow">조선왕조 한양도성</span>
+			<h1>한양도성 육조거리</h1>
+			<p class="subtitle">조선의 중심 관청거리를 디지털로 재현하다</p>
+			<div class="hero-divider"></div>
+		</div>
+		<a href="#intro" class="scroll-cue" aria-label="아래로 스크롤">
+			<span>SCROLL</span>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+				<path d="M12 4v16M5 13l7 7 7-7" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+		</a>
+	</header>
+
+	<!-- ② 소개 섹션 -->
+	<section class="intro" id="intro">
+		<div class="section-inner">
+			<span class="eyebrow">소개</span>
+			<h2>조선의 얼굴, 육조거리</h2>
+
+			<h3>한양 천도와 함께 태어난 길</h3>
+			<p>
+				태조 이성계가 한양으로 도읍을 옮기고 정궁인 경복궁을 세우면서, 그 정문인 광화문 앞으로는
+				국가의 중심 대로가 새롭게 열렸습니다. 이 길이 훗날 '육조거리'라 불리게 된 대로로,
+				광화문에서 남쪽으로 지금의 세종대로 사거리 부근, 예전에 나지막한 황토 언덕이 있어
+				'황토현(黃土峴)'이라 불리던 지점까지 뻗어 있었습니다. 폭넓게 조성된 이 길 양옆으로 조선의
+				최고 관청들이 늘어서면서, 육조거리는 왕도 한양의 얼굴이자 국가 행정의 심장부로 자리 잡았습니다.
+			</p>
+
+			<h3>의정부와 육조, 그리고 관아들</h3>
+			<p>
+				국정을 총괄하던 최고 합의기구 의정부를 비롯해 이조·호조·예조·병조·형조·공조의 육조,
+				군무를 관장한 삼군부와 중추부, 관리들의 기강을 살피던 사헌부, 도성의 행정을 맡은 한성부
+				등이 광화문 앞 대로 좌우에 자리했습니다. 나라의 핵심 관청들이 이렇듯 한곳에 모여 있었기에
+				'육조'라는 이름이 거리 전체를 가리키는 이름으로 굳어졌습니다. 시대에 따라 관청의 위치와
+				구성은 조금씩 바뀌었지만, 이 거리가 조선시대 내내 국가 운영의 중심 무대였다는 사실은
+				변하지 않았습니다.
+			</p>
+
+			<h3>사라졌다 되살아난 거리</h3>
+			<p>
+				근대에 접어들며 육조거리는 큰 변화를 겪었습니다. 일제강점기에는 거리 이름이 '광화문통'으로
+				바뀌었고, 조선총독부 청사가 들어서면서 광화문이 자리를 옮기고 거리 양편의 옛 관아 건물들도
+				헐려 나가면서 예전의 모습은 거의 사라졌습니다. 이후로도 도로와 건물이 잇따라 들어서며
+				육조거리는 오랫동안 잊힌 공간으로 남아 있었습니다. 그러다 광화문광장을 새로 조성하는 과정에서
+				이루어진 발굴조사를 통해 의정부·삼군부·사헌부 등 옛 관아의 건물터와 담장, 우물, 배수로
+				흔적이 다시 모습을 드러냈고, 오늘날 광화문광장 곳곳에서 그 자취를 확인할 수 있습니다.
+			</p>
+
+			<p>
+				본 프로젝트는 이러한 문헌과 고지도, 발굴 자료를 바탕으로 육조거리의 옛 모습을 3차원 디지털
+				모델로 재현한 결과물입니다. 지금은 사라진 전통 관아와 거리의 풍경을 가상 공간에 되살려,
+				누구나 화면 너머로 조선시대 한양의 중심가를 거닐어 볼 수 있도록 제작하였습니다. 아래의
+				3D 뷰어를 통해 육조거리의 전각과 거리 구조를 자유롭게 회전, 확대하며 살펴보실 수 있습니다.
+			</p>
+
+			<p class="source-note">
+				참고: 서울특별시 광화문광장(gwanghwamun.seoul.go.kr), 서울역사박물관 자료를 바탕으로 정리하였습니다.
+				세부 고증 내용과 자료 출처는 지속적으로 보완될 예정입니다.
+			</p>
+		</div>
+	</section>
+
+	<!-- ③ 3D 뷰어 섹션 -->
+	<section class="viewer-section" id="viewer">
+		<div class="section-inner">
+			<div class="viewer-header">
+				<span class="eyebrow">인터랙티브 3D</span>
+				<h2>육조거리 디지털 재현 모델</h2>
+				<p>마우스(또는 터치)로 회전·확대·이동하며 살펴보세요. 더블클릭하면 해당 지점으로 이동합니다.</p>
+			</div>
+
+			<div class="viewer-frame">
+				<div id="viewer-container">
+					<div class="hotspot-layer" id="hotspot-layer"></div>
+					<div class="hotspot-popup" id="hotspot-popup" hidden>
+						<button class="hotspot-popup-close" id="hotspot-popup-close" type="button" aria-label="닫기">&times;</button>
+						<h4 id="hotspot-popup-title"></h4>
+						<p id="hotspot-popup-desc"></p>
+						<p class="hotspot-popup-detail" id="hotspot-popup-detail"></p>
+						<p class="hotspot-popup-today" id="hotspot-popup-today"></p>
+					</div>
+					<button class="viewer-hotspot-toggle-btn" id="viewer-hotspot-toggle-btn" type="button" title="핫스팟 표시/숨김" aria-pressed="true">관청 안내 켜짐</button>
+					<button class="viewer-fullscreen-btn" id="viewer-fullscreen-btn" type="button" title="전체화면" aria-label="전체화면">⛶</button>
+				</div>
+
+				<div class="viewer-poster" id="viewer-poster">
+					<div class="viewer-poster-title">
+						3D 모델 파일 용량이 크므로 버튼을 눌러야 불러옵니다.
+					</div>
+					<button class="viewer-load-btn" id="viewer-load-btn" type="button">3D 모델 불러오기</button>
+					<div class="viewer-hint">로딩에 다소 시간이 걸릴 수 있습니다 (Wi-Fi 환경 권장)</div>
+
+					<div class="viewer-progress-wrap" id="viewer-progress-wrap" hidden>
+						<div class="viewer-progress-track">
+							<div class="viewer-progress-bar" id="viewer-progress-bar"></div>
+						</div>
+						<div class="viewer-progress-label" id="viewer-progress-label"></div>
+					</div>
+
+					<div class="viewer-error" id="viewer-error" hidden></div>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<!-- ④ 푸터 -->
+	<footer>
+		<p>제작: 육조거리 전시관 프로젝트</p>
+	</footer>
+
+	<script type="importmap">
+	{
+		"imports": {
+			"three": "./libs/three.module.js",
+			"three/addons/": "./libs/addons/"
+		}
+	}
+	</script>
+	<script type="module" src="./viewer.js"></script>
+
+</body>
+</html>
